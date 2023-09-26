@@ -4,10 +4,10 @@ from pyspark.sql.types import (StructField, StructType,
 spark = SparkSession.builder.appName('scratch').getOrCreate()
 
 import pandas as pd
-from pyspark.sql.functions import mean, when, col, corr, expr
+from pyspark.sql.functions import mean, when, col, corr
 from pyspark.ml.feature import StandardScaler, VectorAssembler, StringIndexer
 from pyspark.ml import Pipeline
-from ML_model import ml_model_hp, ml_model_aw
+from ML_model import ml_model
 
 
 # --------------------------------------------- Import the Data ---------------------------------------------
@@ -83,59 +83,39 @@ average_wages.select(corr('Value (Average - USD)', 'LOCATION')).show()
 housing_prices.select(corr('Value (Housing - IDX2015)', 'TIME')).show()
 housing_prices.select(corr('Value (Housing - IDX2015)', 'LOCATION')).show()
 
-# -------------------------------------- Scale the Data for the "features" -------------------------------------------
+# --------------------------------------------- Scale the Data ---------------------------------------------
 # Create a StandardScaler object for each numeric column
-numeric_columns_aw = ['LocIndex', 'TIME']
-numeric_columns_hp = ['LocIndex', 'SubIndex', 'TIME']
+numeric_columns_aw = ['LocIndex', 'TIME', 'Value (Average - USD)']
+numeric_columns_hp = ['LocIndex', 'SubIndex', 'TIME', 'Value (Housing - IDX2015)']
 
 # Create a VectorAssembler to assemble numeric columns into a single vector column
-features_assembler_aw = VectorAssembler(inputCols=numeric_columns_aw, outputCol='features_aw')
-features_assembler_hp = VectorAssembler(inputCols=numeric_columns_hp, outputCol='features_hp')
-label_assembler_aw = VectorAssembler(inputCols=["Value (Average - USD)"], outputCol="label_aw")
-label_assembler_hp = VectorAssembler(inputCols=["Value (Housing - IDX2015)"], outputCol="label_hp")
-
-# Transform the DataFrame to add the new "value_as_vector" column
-average_wages = label_assembler_aw.transform(average_wages)
-housing_prices = label_assembler_hp.transform(housing_prices)
+assembler_aw = VectorAssembler(inputCols=numeric_columns_aw, outputCol='features_aw')
+assembler_hp = VectorAssembler(inputCols=numeric_columns_hp, outputCol='features_hp')
 
 # Create a StandardScaler object
-features_scaler_aw = StandardScaler(inputCol='features_aw',
-                                    outputCol='scaled_features_aw', withMean=True, withStd=True)
-features_scaler_hp = StandardScaler(inputCol='features_hp',
-                                    outputCol='scaled_features_hp', withMean=True, withStd=True)
-label_scaler_aw = StandardScaler(inputCol='label_aw',
-                                 outputCol='scaled_label_aw', withMean=True, withStd=True)
-label_scaler_hp = StandardScaler(inputCol='label_hp',
-                                 outputCol='scaled_label_aw', withMean=True, withStd=True)
+scaler_aw = StandardScaler(inputCol='features_aw', outputCol='scaled_features_aw', withMean=True, withStd=True)
+scaler_hp = StandardScaler(inputCol='features_hp', outputCol='scaled_features_hp', withMean=True, withStd=True)
 
 # Create a pipeline to first assemble the vectors and then scale them
-pipeline_aw = Pipeline(stages=[features_assembler_aw, features_scaler_aw])
-pipeline_hp = Pipeline(stages=[features_assembler_hp, features_scaler_hp])
+pipeline_aw = Pipeline(stages=[assembler_aw, scaler_aw])
+pipeline_hp = Pipeline(stages=[assembler_hp, scaler_hp])
 
-# Fit the pipeline and transform the features on average_wages:
-feature_scaler_model_aw = pipeline_aw.fit(average_wages)
-pre_scaled_data_aw = feature_scaler_model_aw.transform(average_wages)
-# Fit the pipeline and transform the labels on average_wages:
-label_scaler_model_aw = label_scaler_aw.fit(pre_scaled_data_aw)
-scaled_data_aw = label_scaler_model_aw.transform(pre_scaled_data_aw)
+# Fit the pipeline and transform the data
+model_aw = pipeline_aw.fit(average_wages)
+scaled_data_aw = model_aw.transform(average_wages)
 
-# Fit the pipeline and transform the features on housing_prices:
 model_hp = pipeline_hp.fit(housing_prices)
-pre_scaled_data_hp = model_hp.transform(housing_prices)
-# Fit the pipeline and transform the labels on housing_prices:
-label_scaler_model_hp = label_scaler_hp.fit(pre_scaled_data_hp)
-scaled_data_hp = label_scaler_model_hp.transform(pre_scaled_data_hp)
+scaled_data_hp = model_hp.transform(housing_prices)
 
 # Show the scaled data
 print("Sample of the 'scaled_features_aw' dataframe: ")
-scaled_data_aw.show(truncate=False)
+scaled_data_aw.select('scaled_features_aw').limit(5).show(truncate=False)
+
 print("Sample of the 'scaled_features_hp' dataframe: ")
-scaled_data_hp.show(truncate=False)
+scaled_data_hp.select('scaled_features_hp').limit(5).show(truncate=False)
 
 # ------------------------------------------- Train and Test set creation -------------------------------------------
-# final_data = output.select("features", "crew")
-
-# train_data, test_data = scaled_data_hp.randomSplit([0.7, 0.3])
+train_data, test_data = scaled_data_hp.randomSplit([0.7, 0.3])
 
 # ------------------------------------------- Call the ML_model -------------------------------------------
-# ml_model(train_data, test_data)
+ml_model(train_data, test_data)

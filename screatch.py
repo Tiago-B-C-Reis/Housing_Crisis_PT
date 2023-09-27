@@ -1,13 +1,10 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.types import (StructField, StructType,
-                               IntegerType, StringType)
-spark = SparkSession.builder.appName('scratch').getOrCreate()
-
-import pandas as pd
-from pyspark.sql.functions import mean, when, col, corr, expr
+from pyspark.sql.functions import mean, when, col, corr
 from pyspark.ml.feature import StandardScaler, VectorAssembler, StringIndexer
 from pyspark.ml import Pipeline
-from ML_model import ml_model_hp, ml_model_aw
+from pyspark.ml.regression import LinearRegression
+
+spark = SparkSession.builder.appName('Data_pre_processing').getOrCreate()
 
 
 # --------------------------------------------- Import the Data ---------------------------------------------
@@ -72,16 +69,14 @@ average_wages.show(5)
 average_wages.printSchema()
 housing_prices.show(5)
 housing_prices.printSchema()
-housing_prices.describe().show()
 
 # --------------------------------------------- Check Correlation ---------------------------------------------
-# This 2 features are 91,52% correlated, which means that one strongly
-# affects the other.
+# For both data sets, bellow it's being checked the correlation between value and time/location.
 average_wages.select(corr('Value (Average - USD)', 'TIME')).show()
-average_wages.select(corr('Value (Average - USD)', 'LOCATION')).show()
+average_wages.select(corr('Value (Average - USD)', 'LocIndex')).show()
 # Same here:
 housing_prices.select(corr('Value (Housing - IDX2015)', 'TIME')).show()
-housing_prices.select(corr('Value (Housing - IDX2015)', 'LOCATION')).show()
+housing_prices.select(corr('Value (Housing - IDX2015)', 'LocIndex')).show()
 
 # -------------------------------------- Scale the Data for the "features" -------------------------------------------
 # Create a StandardScaler object for each numeric column
@@ -94,10 +89,6 @@ features_assembler_hp = VectorAssembler(inputCols=numeric_columns_hp, outputCol=
 label_assembler_aw = VectorAssembler(inputCols=["Value (Average - USD)"], outputCol="label_aw")
 label_assembler_hp = VectorAssembler(inputCols=["Value (Housing - IDX2015)"], outputCol="label_hp")
 
-# Transform the DataFrame to add the new "value_as_vector" column
-average_wages = label_assembler_aw.transform(average_wages)
-housing_prices = label_assembler_hp.transform(housing_prices)
-
 # Create a StandardScaler object
 features_scaler_aw = StandardScaler(inputCol='features_aw',
                                     outputCol='scaled_features_aw', withMean=True, withStd=True)
@@ -106,24 +97,26 @@ features_scaler_hp = StandardScaler(inputCol='features_hp',
 label_scaler_aw = StandardScaler(inputCol='label_aw',
                                  outputCol='scaled_label_aw', withMean=True, withStd=True)
 label_scaler_hp = StandardScaler(inputCol='label_hp',
-                                 outputCol='scaled_label_aw', withMean=True, withStd=True)
+                                 outputCol='scaled_label_hp', withMean=True, withStd=True)
 
 # Create a pipeline to first assemble the vectors and then scale them
-pipeline_aw = Pipeline(stages=[features_assembler_aw, features_scaler_aw])
-pipeline_hp = Pipeline(stages=[features_assembler_hp, features_scaler_hp])
+features_pipeline_aw = Pipeline(stages=[features_assembler_aw, features_scaler_aw])
+label_pipeline_aw = Pipeline(stages=[label_assembler_aw, label_scaler_aw])
+features_pipeline_hp = Pipeline(stages=[features_assembler_hp, features_scaler_hp])
+labels_pipeline_hp = Pipeline(stages=[label_assembler_hp, label_scaler_hp])
 
 # Fit the pipeline and transform the features on average_wages:
-feature_scaler_model_aw = pipeline_aw.fit(average_wages)
+feature_scaler_model_aw = features_pipeline_aw.fit(average_wages)
 pre_scaled_data_aw = feature_scaler_model_aw.transform(average_wages)
 # Fit the pipeline and transform the labels on average_wages:
-label_scaler_model_aw = label_scaler_aw.fit(pre_scaled_data_aw)
+label_scaler_model_aw = label_pipeline_aw.fit(pre_scaled_data_aw)
 scaled_data_aw = label_scaler_model_aw.transform(pre_scaled_data_aw)
 
 # Fit the pipeline and transform the features on housing_prices:
-model_hp = pipeline_hp.fit(housing_prices)
+model_hp = features_pipeline_hp.fit(housing_prices)
 pre_scaled_data_hp = model_hp.transform(housing_prices)
 # Fit the pipeline and transform the labels on housing_prices:
-label_scaler_model_hp = label_scaler_hp.fit(pre_scaled_data_hp)
+label_scaler_model_hp = labels_pipeline_hp.fit(pre_scaled_data_hp)
 scaled_data_hp = label_scaler_model_hp.transform(pre_scaled_data_hp)
 
 # Show the scaled data
@@ -133,9 +126,37 @@ print("Sample of the 'scaled_features_hp' dataframe: ")
 scaled_data_hp.show(truncate=False)
 
 # ------------------------------------------- Train and Test set creation -------------------------------------------
-# final_data = output.select("features", "crew")
+ml_model_data_aw = scaled_data_aw.select("scaled_features_aw", "scaled_label_aw")
+ml_model_data_hp = scaled_data_hp.select("scaled_features_hp", "scaled_label_hp")
 
-# train_data, test_data = scaled_data_hp.randomSplit([0.7, 0.3])
+ml_model_data_aw.show(10, truncate=False)
+ml_model_data_hp.show(10, truncate=False)
+
+train_data_aw, test_data_aw = scaled_data_aw.randomSplit([0.7, 0.3])
+train_data_hp, test_data_hp = scaled_data_hp.randomSplit([0.7, 0.3])
+
 
 # ------------------------------------------- Call the ML_model -------------------------------------------
-# ml_model(train_data, test_data)
+
+# AW Model set:
+aw_lr = LinearRegression(featuresCol='scaled_features_aw',
+                         labelCol='scaled_label_aw',
+                         predictionCol='prediction_aw',
+                         maxIter=1000)
+aw_lr_model = aw_lr.fit(train_data_aw)
+
+# Print the coefficients and intercept for linear regression
+print("Coefficients: {} Intercept: {}".format(aw_lr_model.coefficients,
+                                              aw_lr_model.intercept))
+
+
+# HP Model set:
+hp_lr = LinearRegression(featuresCol='scaled_features_hp',
+                         labelCol='scaled_label_hp',
+                         predictionCol='prediction_hp',
+                         maxIter=1000)
+hp_lr_model = hp_lr.fit(train_data_hp)
+
+# Print the coefficients and intercept for linear regression
+print("Coefficients: {} Intercept: {}".format(hp_lr_model.coefficients,
+                                              hp_lr_model.intercept))

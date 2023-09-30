@@ -160,3 +160,29 @@ hp_lr_model = hp_lr.fit(train_data_hp)
 # Print the coefficients and intercept for linear regression
 print("Coefficients: {} Intercept: {}".format(hp_lr_model.coefficients,
                                               hp_lr_model.intercept))
+
+
+
+
+
+
+
+# --------------------
+from pyspark.sql.functions import lit
+
+# Create a DataFrame with the 'Time' values you want to predict for (2023 to 2027)
+prediction_years_df = spark.createDataFrame([(2023,), (2024,), (2025,), (2026,), (2027,)], ["TIME"])
+
+# Add a new column with 'LocIndex' for 'AUS' (assuming 'AUS' is the location you want to predict for)
+prediction_years_df = prediction_years_df.withColumn("LOCATION", lit("AUS"))
+prediction_years_df = location_indexer_model_hp.transform(prediction_years_df)
+prediction_years_df.show()
+
+# Assemble the features for prediction
+prediction_years_df = feature_scaler_model_aw.transform(prediction_years_df)
+
+# Use the trained model to make predictions
+predictions = aw_lr_model.transform(prediction_years_df)
+
+# Show the predictions
+predictions.select("LOCATION", "TIME", "prediction_aw").show()

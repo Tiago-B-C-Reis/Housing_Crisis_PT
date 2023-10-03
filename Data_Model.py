@@ -1,7 +1,8 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import mean, when, col, corr
+from pyspark.sql.functions import mean, when, col, corr, lit, coalesce
 from pyspark.ml.feature import StandardScaler, VectorAssembler, StringIndexer
 from pyspark.ml import Pipeline
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DoubleType
 from pyspark.ml.regression import LinearRegression
 
 spark = SparkSession.builder.appName('Data_pre_processing').getOrCreate()
@@ -181,8 +182,8 @@ predictions_aw.show(5)
 predictions_hp.show(5)
 
 # --------------------------------------- ML model 5 years predictions -----------------------------------------------
-# Define the range of years you want to add (from 2023 to 2030)
-years_to_add = list(range(2023, 2031))
+# Define the range of years you want to add (from 2022 to 2030)
+years_to_add = list(range(2022, 2031))
 
 # Get unique locations from the original dataset
 unique_locations = scaled_data_aw.select("LOCATION").distinct()
@@ -197,38 +198,76 @@ predictions_data_hp = unique_locations.crossJoin(unique_subjects).crossJoin(
     spark.createDataFrame([(year,) for year in years_to_add], ["TIME"])
 )
 
-#
+# Using the 'location_indexer_model_hp' to create and add the 'LocIndex' to the 'predictions_data_aw':
 predictions_data_aw = location_indexer_model_hp.transform(predictions_data_aw)
-#
+
+# Using the 'location_indexer_model_hp' to create and add the 'LocIndex' to the 'predictions_data_hp':
 predictions_data_hp = location_indexer_model_hp.transform(predictions_data_hp)
+# Using the 'subject_indexer_model_hp' to create and add the 'SubIndex' to the 'predictions_data_hp':
 predictions_data_hp = subject_indexer_model_hp.transform(predictions_data_hp)
 
-# Assemble the features for prediction
+# Use the 'feature_scaler_model_aw' and 'feature_scaler_model_hp' to scale the data:
 predictions_data_aw = feature_scaler_model_aw.transform(predictions_data_aw)
 predictions_data_hp = feature_scaler_model_hp.transform(predictions_data_hp)
 
-# Use the trained model to make predictions
-predictions_aw = aw_lr_model.transform(predictions_data_aw)
-predictions_hp = hp_lr_model.transform(predictions_data_hp)
+# Use the trained model to make predictions and add the 'prediction_aw' row on the dataset
+# 'predictions_data_aw' then create a copy named 'future_predictions_aw':
+future_predictions_aw = aw_lr_model.transform(predictions_data_aw)
+# Use the trained model to make predictions and add the 'prediction_hp' row on the dataset
+# 'predictions_data_hp' then create a copy named 'future_predictions_hp':
+future_predictions_hp = hp_lr_model.transform(predictions_data_hp)
 
 # Show the expanded DataFrame
-predictions_aw.orderBy("LOCATION", "TIME").show()
-predictions_hp.orderBy("LOCATION", "SUBJECT", "TIME").show()
+future_predictions_aw.orderBy("LOCATION", "TIME").show()
+future_predictions_hp.orderBy("LOCATION", "SUBJECT", "TIME").show()
 
 
 # ---------------------------- Add the 5 years of predictions to the final datasets ----------------------------------
 
+# Select the columns that have value from the main 'hp (housing prices)' table and casting the desirable data types:
+predictions_hp = predictions_hp.select(col("LOCATION").cast("string"),
+                                       col("SUBJECT").cast("string"),
+                                       col("TIME").cast("integer"),
+                                       col("Value (Housing - IDX2015)").cast("double")
+                                       ).orderBy("LOCATION", "SUBJECT", "TIME")
 
-# Filter rows from the second table where TIME is between 2023 and 2030
-filtered_second_table = predictions_hp.filter((predictions_hp['TIME'] >= 2023) & (predictions_hp['TIME'] <= 2030))
+# Select the columns that have value from the main 'hp (average wages)' table and casting the desirable data types:
+predictions_aw = predictions_aw.select(col("LOCATION").cast("string"),
+                                       col("TIME").cast("integer"),
+                                       col("Value (Average - USD)").cast("double")
+                                       ).orderBy("LOCATION", "TIME")
 
-# Select the columns you want to keep in both DataFrames
-# Assuming you want to keep LOCATION, SUBJECT, TIME, Value (Housing - IDX2015)
-first_table = scaled_data_hp.select('LOCATION', 'SUBJECT', 'TIME', 'Value (Housing - IDX2015)')
-filtered_second_table = filtered_second_table.select('LOCATION', 'SUBJECT', 'TIME', 'prediction_hp')
+# Rename the "prediction_hp" column to "Value (Housing - IDX2015)"
+future_predictions_hp = future_predictions_hp.withColumnRenamed("prediction_hp",
+                                                                "Value (Housing - IDX2015)")
 
-# Union the two DataFrames to combine them
-final_table = first_table.union(filtered_second_table)
+# Select the columns that have value from 'future_predictions_hp' and casting the desirable data types:
+future_predictions_hp = future_predictions_hp.select(
+    col("LOCATION").cast("string"),
+    col("SUBJECT").cast("string"),
+    col("TIME").cast("integer"),
+    col("Value (Housing - IDX2015)").cast("double")
+).orderBy("LOCATION", "SUBJECT", "TIME")
 
-# Show the final combined DataFrame
-final_table.show(60)
+# Rename the "prediction_aw" column to "Value (Average - USD)"
+future_predictions_aw = future_predictions_aw.withColumnRenamed("prediction_aw",
+                                                                "Value (Average - USD)")
+
+# Select the columns that have value from 'future_predictions_aw' and casting the desirable data types:
+future_predictions_aw = future_predictions_aw.select(
+    col("LOCATION").cast("string"),
+    col("TIME").cast("integer"),
+    col("Value (Average - USD)").cast("double")
+).orderBy("LOCATION", "TIME")
+
+# unite all the rows from both tables (for the both cases) and keeping the 'duplicates':
+hp_final = predictions_hp.unionAll(future_predictions_hp).orderBy("LOCATION", "SUBJECT", "TIME")
+hp_final.show(100)
+aw_final = predictions_aw.unionAll(future_predictions_aw).orderBy("LOCATION", "TIME")
+aw_final.show(100)
+
+# Save the Pandas DataFrame as a CSV file
+hp_final.toPandas().to_csv(
+    '/Users/tiagoreis/PycharmProjects/Housing_Crisis_PT/DataSet/hp_final.csv', index=False)
+aw_final.toPandas().to_csv(
+    '/Users/tiagoreis/PycharmProjects/Housing_Crisis_PT/DataSet/aw_final.csv', index=False)
